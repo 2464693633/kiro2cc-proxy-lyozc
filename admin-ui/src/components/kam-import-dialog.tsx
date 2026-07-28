@@ -34,6 +34,8 @@ interface KamAccount {
     startUrl?: string
   }
   machineId?: string
+  // 企业版 IdC 账号的 getUsageLimits 缺少 profileArn 会返回 400
+  profileArn?: string
   status?: string
 }
 
@@ -250,6 +252,7 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
             authRegion: cred.region?.trim() || undefined,
             clientId,
             clientSecret,
+            profileArn: account.profileArn?.trim() || undefined,
             machineId: account.machineId?.trim() || undefined,
           })
 
