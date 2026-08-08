@@ -1,6 +1,6 @@
 # 任务清单：multi-endpoint-load-balancing
 
-## 状态：DONE
+## 状态：ARCHIVED
 
 ## 任务
 
@@ -48,13 +48,13 @@
 
 ## 验收标准（全局）
 
-- [ ] `cargo check` 通过
-- [ ] `cargo clippy -- -D warnings` 通过
-- [ ] `cargo fmt --check` 通过
-- [ ] `cargo test` 全绿（既有测试零回归 + 新增 ≥ 6 测试）
-- [ ] `credentials.json` 缺省 `endpoint` 字段时行为与现行完全一致（默认 `Ide` 单端点）
-- [ ] 不引入新外部 crate（`Cargo.toml` 无新增依赖）
-- [ ] 文档同步完成（代码速查表 + README）
+- [x] `cargo check` 通过
+- [x] `cargo clippy -- -D warnings` 通过（本 change 当时遗留的 2 个预存在 error 已在归档时一并修掉：`cache/fingerprint.rs` 改 `zip` 迭代、`kiro/token_manager.rs` 改 let chain）
+- [x] `cargo fmt --check` 通过
+- [x] `cargo test` 全绿（既有测试零回归 + 新增 20 测试）
+- [x] `credentials.json` 缺省 `endpoint` 字段时行为与现行完全一致（默认 `Ide` 单端点）
+- [x] 不引入新外部 crate（`Cargo.toml` 无新增依赖）
+- [x] 文档同步完成（代码速查表 §3.5 + README 多端点负载均衡小节）
 
 ## 依赖与约束
 
