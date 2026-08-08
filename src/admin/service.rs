@@ -491,6 +491,7 @@ impl AdminService {
             msg.contains("已被限流") ||
             msg.contains("服务器错误") ||
             msg.contains("Token 刷新失败") ||
+            msg.contains("获取使用额度失败") ||
             msg.contains("暂时不可用") ||
             // 网络错误（reqwest 错误）
             msg.contains("error trying to connect") ||
@@ -519,7 +520,9 @@ impl AdminService {
             || msg.contains("refreshToken 重复")
             || msg.contains("凭证已过期或无效")
             || msg.contains("权限不足")
-            || msg.contains("已被限流");
+            || msg.contains("已被限流")
+            // AWS OIDC 对失效的 refreshToken 返回 400 invalid_grant，不是 401
+            || msg.contains("invalid_grant");
 
         if is_invalid_credential {
             AdminServiceError::InvalidCredential(msg)

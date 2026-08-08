@@ -31,6 +31,8 @@ interface CredentialInput {
   apiRegion?: string
   priority?: number
   machineId?: string
+  // 企业版 IdC 账号的 getUsageLimits 缺少 profileArn 会返回 400
+  profileArn?: string
 }
 
 interface VerificationResult {
@@ -102,6 +104,7 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
             authMethod: a.credentials?.authMethod,
             clientId: a.credentials?.clientId || undefined,
             clientSecret: a.credentials?.clientSecret || undefined,
+            profileArn: a.profileArn || undefined,
           }))
           .filter((c: CredentialInput) => c.refreshToken)
       } else {
@@ -197,6 +200,7 @@ export function BatchImportDialog({ open, onOpenChange }: BatchImportDialogProps
             apiRegion: cred.apiRegion?.trim() || undefined,
             clientId,
             clientSecret,
+            profileArn: cred.profileArn?.trim() || undefined,
             priority: cred.priority || 0,
             machineId: cred.machineId?.trim() || undefined,
           })
