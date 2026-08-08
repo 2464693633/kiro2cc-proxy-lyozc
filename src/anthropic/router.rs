@@ -14,6 +14,7 @@ use crate::kiro::provider::KiroProvider;
 use super::{
     handlers::{count_tokens, get_model, get_models, ping, post_messages, post_messages_cc},
     middleware::{AppState, auth_middleware, cors_layer},
+    openai::post_chat_completions,
 };
 
 /// 请求体最大大小限制 (200MB)
@@ -25,6 +26,7 @@ const MAX_BODY_SIZE: usize = 200 * 1024 * 1024;
 /// - `GET /v1/models` - 获取可用模型列表
 /// - `POST /v1/messages` - 创建消息（对话）
 /// - `POST /v1/messages/count_tokens` - 计算 token 数量
+/// - `POST /v1/chat/completions` - OpenAI Chat Completions 兼容
 ///
 /// # 认证
 /// 所有 `/v1` 路径需要 API Key 认证，支持：
@@ -60,6 +62,8 @@ fn build_router(state: AppState) -> Router {
         .route("/models/{model_id}", get(get_model))
         .route("/messages", post(post_messages))
         .route("/messages/count_tokens", post(count_tokens))
+        // OpenAI Chat Completions 兼容端点：翻译后复用 post_messages 全链路
+        .route("/chat/completions", post(post_chat_completions))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

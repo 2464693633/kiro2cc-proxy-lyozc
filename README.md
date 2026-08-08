@@ -24,6 +24,7 @@
 - **Thinking 模式**：支持 Claude 的 extended thinking 功能
 - **工具调用**：完整支持 function calling / tool use
 - **WebSearch**：内置 WebSearch 工具转换逻辑
+- **OpenAI 协议兼容**：内置 `/v1/chat/completions` 端点，OpenAI 客户端可直连（真流式、工具调用、多模态）
 - **Admin 管理**：可选的 Web 管理界面，支持账号管理、余额查询等
 - **账号级代理**：支持为每个账号单独配置 HTTP/SOCKS5 代理
 
@@ -635,6 +636,39 @@ curl http://127.0.0.1:5678/v1/messages \
 | `/cc/v1/messages/count_tokens` | POST | 估算 Token 数量 |
 
 > `/cc/v1/messages` 会等待上游流完成后再返回，`input_tokens` 使用实际值而非估算值，等待期间每 25 秒发送 `ping` 保活。
+
+### OpenAI 兼容端点 (/v1)
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/v1/chat/completions` | POST | OpenAI Chat Completions 协议 |
+
+只会说 OpenAI 协议的客户端（Cherry Studio / LobeChat / one-api / 各语言 OpenAI SDK）可直接接入，无需额外的翻译代理进程。请求被翻译成 Anthropic 格式后复用 `/v1/messages` 全链路（模型映射、多账号故障转移、用量记账、prompt cache、多端点负载均衡）。
+
+接入方式与官方 OpenAI API 一致，`base_url` 填代理地址：
+
+```bash
+curl http://127.0.0.1:5678/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer 在管理面板创建的 API Key" \
+  -d '{
+    "model": "claude-sonnet-4-5",
+    "messages": [{"role": "user", "content": "hi"}],
+    "stream": true
+  }'
+```
+
+支持能力：
+
+- **真流式**：`stream: true` 时逐 token 输出，工具调用的 `arguments` 也是增量的（非等全部生成完再一次性返回）
+- **工具调用**：`tools` / `tool_choice` / `tool_calls` / `tool` 角色双向映射
+- **多模态**：`image_url` 支持 `data:` URL（不支持远程 URL）
+- **思考内容**：thinking 输出到 `reasoning_content` 字段（DeepSeek / vLLM / OpenRouter 事实标准）
+- **缓存计量**：prompt cache 命中量写入 OpenAI 官方的 `usage.prompt_tokens_details.cached_tokens`
+
+`GET /v1/models` 无需改动即可用于 OpenAI 客户端的模型发现。
+
+> `temperature` / `top_p` / `n` / `presence_penalty` 等参数 Kiro 上游不支持，会被静默忽略（不报错）。`/v1/responses`（Codex CLI 默认协议）暂未实现。
 
 ### 客户端认证
 
