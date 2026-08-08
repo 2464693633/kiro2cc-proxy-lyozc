@@ -614,9 +614,12 @@ struct CredentialEntry {
 }
 
 /// 禁用原因
+///
+/// 通过 `CredentialEntrySnapshot` 暴露给 Admin API，让前端能区分"为什么被禁用"
+/// 而不是只看到一个 `disabled: bool`——手动禁用与额度耗尽/配置错误的处置方式完全不同。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum DisabledReason {
+pub enum DisabledReason {
     /// Admin API 手动禁用
     Manual,
     /// 连续失败达到阈值后自动禁用
@@ -742,6 +745,13 @@ pub struct CredentialEntrySnapshot {
     pub health_status: HealthStatus,
     /// 被限流次数（429 响应，累计）
     pub throttle_count: u64,
+    /// 禁用原因（仅 `disabled == true` 时有值）
+    ///
+    /// 让前端能区分手动禁用与自动判定（额度耗尽 / 连续失败 / 配置错误），
+    /// 三者的处置方式完全不同：手动禁用需人工重新启用，额度耗尽等下个计费周期，
+    /// 连续失败可重置计数重试，配置错误必须改配置后重启。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<DisabledReason>,
 }
 
 /// 账号管理器状态快照
@@ -2198,6 +2208,8 @@ impl MultiTokenManager {
                     proxy_url: e.credentials.proxy_url.clone(),
                     health_status: Self::compute_health(e),
                     throttle_count: e.throttle_count,
+                    // 仅在确实禁用时给出原因，避免前端把历史原因当成当前状态
+                    disabled_reason: if e.disabled { e.disabled_reason } else { None },
                 })
                 .collect(),
             current_id,
@@ -3949,5 +3961,46 @@ mod tests {
         let snapshot = manager.snapshot();
         let added = snapshot.entries.iter().find(|e| e.id == new_id).unwrap();
         assert!(!added.disabled);
+    }
+
+    #[test]
+    fn test_snapshot_exposes_disabled_reason_only_while_disabled() {
+        // 缺 kiroApiKey 的 API Key 凭据在启动校验时被自动禁用，原因应为 InvalidConfig
+        let mut bad = KiroCredentials::default();
+        bad.auth_method = Some("api_key".to_string());
+        // kiro_api_key 保持 None
+
+        let manager =
+            MultiTokenManager::new(Config::default(), vec![bad], None, None, false).unwrap();
+        let entry = &manager.snapshot().entries[0];
+        assert!(entry.disabled, "缺 kiroApiKey 应被自动禁用");
+        assert_eq!(
+            entry.disabled_reason,
+            Some(DisabledReason::InvalidConfig),
+            "前端需要靠这个字段区分「配置写错」和「手动禁用」"
+        );
+
+        // 正常凭据不应携带原因——否则前端会把历史原因当成当前状态展示
+        let mut ok = KiroCredentials::default();
+        ok.refresh_token = Some("a".repeat(150));
+        let manager2 =
+            MultiTokenManager::new(Config::default(), vec![ok], None, None, false).unwrap();
+        let entry2 = &manager2.snapshot().entries[0];
+        assert!(!entry2.disabled);
+        assert_eq!(entry2.disabled_reason, None);
+    }
+
+    #[test]
+    fn test_disabled_reason_serializes_as_snake_case_for_frontend() {
+        // 前端按这些字面量做 i18n key 映射，变更即破坏兼容
+        let cases = [
+            (DisabledReason::Manual, "\"manual\""),
+            (DisabledReason::TooManyFailures, "\"too_many_failures\""),
+            (DisabledReason::QuotaExceeded, "\"quota_exceeded\""),
+            (DisabledReason::InvalidConfig, "\"invalid_config\""),
+        ];
+        for (reason, expected) in cases {
+            assert_eq!(serde_json::to_string(&reason).unwrap(), expected);
+        }
     }
 }

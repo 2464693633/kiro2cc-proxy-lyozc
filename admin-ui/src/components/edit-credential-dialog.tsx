@@ -29,6 +29,7 @@ export function EditCredentialDialog({ open, onOpenChange, credential }: EditCre
   const [email, setEmail] = useState('')
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
+  const [kiroApiKey, setKiroApiKey] = useState('')
   const [profileArn, setProfileArn] = useState('')
   const [machineId, setMachineId] = useState('')
   const [proxyUrl, setProxyUrl] = useState('')
@@ -46,6 +47,7 @@ export function EditCredentialDialog({ open, onOpenChange, credential }: EditCre
       setEmail(credential.email || '')
       setClientId('')
       setClientSecret('')
+      setKiroApiKey('')
       setProfileArn('')
       setMachineId('')
       setProxyUrl(credential.proxyUrl || '')
@@ -65,6 +67,7 @@ export function EditCredentialDialog({ open, onOpenChange, credential }: EditCre
     if (email !== (credential.email || '')) data.email = email
     if (clientId !== '') data.clientId = clientId
     if (clientSecret !== '') data.clientSecret = clientSecret
+    if (kiroApiKey !== '') data.kiroApiKey = kiroApiKey
     if (profileArn !== '') data.profileArn = profileArn
     if (machineId !== '') data.machineId = machineId
     if (proxyUrl !== (credential.proxyUrl || '')) data.proxyUrl = proxyUrl
@@ -91,6 +94,7 @@ export function EditCredentialDialog({ open, onOpenChange, credential }: EditCre
   }
 
   const isIdc = credential.authMethod === 'idc'
+  const isApiKey = credential.authMethod === 'api_key'
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -172,6 +176,20 @@ export function EditCredentialDialog({ open, onOpenChange, credential }: EditCre
                   />
                 </div>
               </>
+            )}
+
+            {/* Kiro API Key（仅 api_key 凭据） */}
+            {isApiKey && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">{t('credentials.kiroApiKeyLabel')}</label>
+                <Input
+                  type="password"
+                  placeholder={t('credentials.kiroApiKeyConfiguredPlaceholder')}
+                  value={kiroApiKey}
+                  onChange={(e) => setKiroApiKey(e.target.value)}
+                  disabled={isPending}
+                />
+              </div>
             )}
 
             {/* Profile ARN */}

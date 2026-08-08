@@ -19,11 +19,12 @@ interface AddCredentialDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
-type AuthMethod = 'social' | 'idc'
+type AuthMethod = 'social' | 'idc' | 'api_key'
 
 export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogProps) {
   const { t } = useTranslation()
   const [refreshToken, setRefreshToken] = useState('')
+  const [kiroApiKey, setKiroApiKey] = useState('')
   const [email, setEmail] = useState('')
   const [authMethod, setAuthMethod] = useState<AuthMethod>('social')
   const [authRegion, setAuthRegion] = useState('')
@@ -39,14 +40,18 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
 
   const { mutate, isPending } = useAddCredential()
 
+  const isApiKey = authMethod === 'api_key'
+
   const resetForm = () => {
     setRefreshToken('')
+    setKiroApiKey('')
     setEmail('')
     setAuthMethod('social')
     setAuthRegion('')
     setApiRegion('')
     setClientId('')
     setClientSecret('')
+    setKiroApiKey('')
     setProfileArn('')
     setPriority('0')
     setMachineId('')
@@ -58,8 +63,16 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
 
-    // 验证必填字段
-    if (!refreshToken.trim()) {
+    const isApiKey = authMethod === 'api_key'
+
+    // 必填字段按凭据类型分流：API Key 凭据没有 refreshToken，
+    // 它把 kiroApiKey 直接当 Bearer Token 用，二者互斥。
+    if (isApiKey) {
+      if (!kiroApiKey.trim()) {
+        toast.error(t('credentials.toastKiroApiKeyRequired'))
+        return
+      }
+    } else if (!refreshToken.trim()) {
       toast.error(t('credentials.toastRefreshTokenRequired'))
       return
     }
@@ -72,7 +85,9 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
 
     mutate(
       {
-        refreshToken: refreshToken.trim(),
+        // API Key 凭据不发送 refreshToken（后端该字段已是可选）
+        refreshToken: isApiKey ? undefined : refreshToken.trim(),
+        kiroApiKey: isApiKey ? kiroApiKey.trim() : undefined,
         authMethod,
         email: email.trim() || undefined,
         authRegion: authRegion.trim() || undefined,
@@ -108,20 +123,39 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
 
         <form onSubmit={handleSubmit} className="flex flex-col min-h-0 flex-1">
           <div className="space-y-4 py-4 overflow-y-auto flex-1 pr-1">
-            {/* Refresh Token */}
-            <div className="space-y-2">
-              <label htmlFor="refreshToken" className="text-sm font-medium">
-                {t('credentials.refreshTokenLabel')} <span className="text-red-500">*</span>
-              </label>
-              <Input
-                id="refreshToken"
-                type="password"
-                placeholder={t('credentials.refreshTokenPlaceholder')}
-                value={refreshToken}
-                onChange={(e) => setRefreshToken(e.target.value)}
-                disabled={isPending}
-              />
-            </div>
+            {/* 凭据本体：API Key 与 Refresh Token 互斥，二者其一 */}
+            {isApiKey ? (
+              <div className="space-y-2">
+                <label htmlFor="kiroApiKey" className="text-sm font-medium">
+                  {t('credentials.kiroApiKeyLabel')} <span className="text-red-500">*</span>
+                </label>
+                <Input
+                  id="kiroApiKey"
+                  type="password"
+                  placeholder={t('credentials.kiroApiKeyPlaceholder')}
+                  value={kiroApiKey}
+                  onChange={(e) => setKiroApiKey(e.target.value)}
+                  disabled={isPending}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t('credentials.kiroApiKeyHint')}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <label htmlFor="refreshToken" className="text-sm font-medium">
+                  {t('credentials.refreshTokenLabel')} <span className="text-red-500">*</span>
+                </label>
+                <Input
+                  id="refreshToken"
+                  type="password"
+                  placeholder={t('credentials.refreshTokenPlaceholder')}
+                  value={refreshToken}
+                  onChange={(e) => setRefreshToken(e.target.value)}
+                  disabled={isPending}
+                />
+              </div>
+            )}
 
             {/* 用户名/邮箱 */}
             <div className="space-y-2">
@@ -152,6 +186,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
               >
                 <option value="social">Social</option>
                 <option value="idc">IdC/Builder-ID/IAM</option>
+                <option value="api_key">{t('credentials.authMethodApiKey')}</option>
               </select>
             </div>
 

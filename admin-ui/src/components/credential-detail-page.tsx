@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { useCredentials, useCredentialUsageRecords, useCredentialTodaySummary } from '@/hooks/use-credentials'
 import { useIpGeo } from '@/hooks/use-ip-geo'
 import { formatDateTime, formatTokenCount } from '@/lib/locale'
+import { disabledReasonI18nKey } from '@/lib/utils'
 
 interface CredentialDetailPageProps {
   credentialId: number
@@ -92,6 +93,12 @@ export function CredentialDetailPage({ credentialId, onBack }: CredentialDetailP
             <Badge variant={credential.disabled ? 'destructive' : 'success'}>
               {credential.disabled ? t('credentials.healthDisabled') : t('credentials.enabled')}
             </Badge>
+            {/* 详情页空间充足，禁用原因直接展示为可见文本（卡片上是 tooltip） */}
+            {credential.disabled && credential.disabledReason && (
+              <span className="text-xs text-muted-foreground">
+                {t(disabledReasonI18nKey(credential.disabledReason))}
+              </span>
+            )}
           </div>
         )}
       </div>

@@ -106,6 +106,28 @@ function parseNestedErrorMessage(message: string): { title: string; detail?: str
   return { title: message }
 }
 
+/**
+ * 把后端的 disabledReason 映射为 i18n key。
+ *
+ * 后端 `DisabledReason` 以 snake_case 序列化，仅在 `disabled === true` 时下发。
+ * 未知值（后端新增了变体而前端未同步）回退到通用的"已禁用"文案，
+ * 而不是渲染出原始的 snake_case 值。
+ */
+export function disabledReasonI18nKey(reason: string | undefined): string {
+  switch (reason) {
+    case 'manual':
+      return 'credentials.disabledReasonManual'
+    case 'too_many_failures':
+      return 'credentials.disabledReasonTooManyFailures'
+    case 'quota_exceeded':
+      return 'credentials.disabledReasonQuotaExceeded'
+    case 'invalid_config':
+      return 'credentials.disabledReasonInvalidConfig'
+    default:
+      return 'credentials.healthDisabled'
+  }
+}
+
 export function getSubscriptionColor(title: string): string {
   const t = title.toUpperCase()
   if (t.includes('ENTERPRISE')) return 'text-yellow-600 dark:text-yellow-400'

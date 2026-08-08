@@ -7,11 +7,28 @@ export interface CredentialsStatusResponse {
   credentials: CredentialStatusItem[]
 }
 
+// 认证方式
+//
+// api_key 凭据直接把 kiroApiKey 当 Bearer Token 用，不需要 refreshToken。
+export type AuthMethod = 'social' | 'idc' | 'external_idp' | 'api_key'
+
+// 禁用原因（后端 DisabledReason 的 snake_case 序列化值）
+//
+// 四者处置方式完全不同：manual 需人工重新启用；quota_exceeded 等下个计费周期；
+// too_many_failures 可重置失败计数重试；invalid_config 必须改配置后重启。
+export type DisabledReason =
+  | 'manual'
+  | 'too_many_failures'
+  | 'quota_exceeded'
+  | 'invalid_config'
+
 // 单个凭据状态
 export interface CredentialStatusItem {
   id: number
   priority: number
   disabled: boolean
+  /** 禁用原因，仅 disabled 为 true 时后端才下发 */
+  disabledReason?: DisabledReason
   failureCount: number
   isCurrent: boolean
   expiresAt: string | null
@@ -63,9 +80,13 @@ export interface SetPriorityRequest {
 }
 
 // 添加凭据请求
+//
+// refreshToken 与 kiroApiKey 二者其一必填：OAuth 凭据（social / idc /
+// external_idp）用 refreshToken，api_key 凭据用 kiroApiKey。
 export interface AddCredentialRequest {
-  refreshToken: string
-  authMethod?: 'social' | 'idc'
+  refreshToken?: string
+  kiroApiKey?: string
+  authMethod?: AuthMethod
   email?: string
   nickname?: string
   clientId?: string
@@ -83,6 +104,7 @@ export interface AddCredentialRequest {
 // 更新凭据请求
 export interface UpdateCredentialRequest {
   refreshToken?: string
+  kiroApiKey?: string
   authMethod?: string
   email?: string
   nickname?: string

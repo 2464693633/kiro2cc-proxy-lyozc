@@ -19,7 +19,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import type { CredentialStatusItem, BalanceResponse } from '@/types/api'
-import { getSubscriptionColor } from '@/lib/utils'
+import { getSubscriptionColor, disabledReasonI18nKey } from '@/lib/utils'
 import {
   useSetDisabled,
   useSetPriority,
@@ -173,7 +173,14 @@ export function CredentialCard({
                     {credential.nickname || t('credentials.accountFallbackName', { id: credential.id })}
                   </span>
                   <HealthBadge status={credential.healthStatus} />
-                  {credential.disabled && <Badge variant="destructive">{t('credentials.healthDisabled')}</Badge>}
+                  {credential.disabled && (
+                    <Badge
+                      variant="destructive"
+                      title={t(disabledReasonI18nKey(credential.disabledReason))}
+                    >
+                      {t('credentials.healthDisabled')}
+                    </Badge>
+                  )}
                 </div>
 
                 {/* 行2：账号 + 最后调用 */}
