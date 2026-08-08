@@ -199,18 +199,17 @@ impl FingerprintTracker {
         let matched_cumulative: i32 = if let Some(mtx) = table_mutex {
             let mut tbl = mtx.lock();
             let mut matched = 0i32;
-            let limit = profile.len().min(tbl.breakpoints.len());
-            for k in 0..limit {
-                let bp = &mut tbl.breakpoints[k];
+            // zip 天然截断到两者较短的一方，等价于原先的 min(profile.len(), breakpoints.len())
+            for (bp, seg) in tbl.breakpoints.iter_mut().zip(profile.iter()) {
                 let expired = match bp.tier {
                     EphemeralTier::FiveM => now.duration_since(bp.last_hit_at) > ttl_5m,
                     EphemeralTier::OneH => now.duration_since(bp.last_hit_at) > ttl_1h,
                 };
-                if expired || bp.hash != profile[k].hash {
+                if expired || bp.hash != seg.hash {
                     break;
                 }
                 bp.last_hit_at = now;
-                matched = profile[k].cumulative_tokens;
+                matched = seg.cumulative_tokens;
             }
             matched
         } else {
