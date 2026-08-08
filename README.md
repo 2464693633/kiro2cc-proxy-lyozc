@@ -18,6 +18,7 @@
 - **Anthropic API 兼容**：完整支持 Anthropic Claude API 格式
 - **流式响应**：支持 SSE (Server-Sent Events) 流式输出
 - **Token 自动刷新**：自动管理和刷新 OAuth Token
+- **多种凭据类型**：Social / IDC / Builder-ID / 企业 SSO(Azure AD) / **Kiro API Key**
 - **多账号支持**：支持配置多个账号，按优先级自动故障转移
 - **负载均衡**：支持 `priority`（按优先级）和 `balanced`（均衡分配）两种模式
 - **智能重试**：单账号最多重试 3 次，单请求最多重试 9 次
@@ -447,6 +448,19 @@ bash start_server.sh restart   # 重启
   "clientSecret": "your-client-secret"
 }
 ```
+
+**API Key 登录（单账号）：**
+
+```json
+{
+  "kiroApiKey": "ksk_your_api_key",
+  "authMethod": "api_key"
+}
+```
+
+Kiro API Key（`ksk_` 前缀）本身不过期，无需 `refreshToken`，也不参与 Token 刷新。只填 `kiroApiKey` 一个字段也可以（`authMethod` 可省略，会自动识别）。
+
+> 若写了 `"authMethod": "api_key"` 却漏填 `kiroApiKey`，该账号会在启动时被自动禁用并在日志中提示，补上字段重启即恢复。API Key 的有效性在首次实际对话时由上游判定（添加时不做探测）。
 
 **多账号（数组格式，支持故障转移）：**
 

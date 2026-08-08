@@ -111,6 +111,14 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_password: Option<String>,
 
+    /// Kiro API Key（可选，`authMethod: "api_key"` 时必填）
+    ///
+    /// API Key 凭据直接把该值作为 Bearer Token 使用，**不需要** `refreshToken`，
+    /// 也不参与 token 刷新流程（API Key 本身不过期）。
+    /// 调用上游时会额外携带 `TokenType: API_KEY` 头。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kiro_api_key: Option<String>,
+
     /// 账号是否被禁用（默认为 false）
     #[serde(default)]
     pub disabled: bool,
@@ -150,6 +158,7 @@ impl std::fmt::Debug for KiroCredentials {
             .field("auth_method", &self.auth_method)
             .field("client_id", &self.client_id)
             .field("client_secret", &redact(&self.client_secret))
+            .field("kiro_api_key", &redact(&self.kiro_api_key))
             .field("priority", &self.priority)
             .field("region", &self.region)
             .field("auth_region", &self.auth_region)
@@ -176,6 +185,8 @@ fn canonicalize_auth_method_value(value: &str) -> &str {
         "idc"
     } else if value.eq_ignore_ascii_case("azuread") || value.eq_ignore_ascii_case("entraid") {
         "external_idp"
+    } else if value.eq_ignore_ascii_case("api_key") || value.eq_ignore_ascii_case("apikey") {
+        "api_key"
     } else {
         value
     }
@@ -370,6 +381,46 @@ impl KiroCredentials {
         }
     }
 
+    /// 是否为 API Key 凭据
+    ///
+    /// API Key 凭据直接把 `kiroApiKey` 作为 Bearer Token 使用，无需 `refreshToken`，
+    /// 也不参与 token 刷新。只要带了 `kiroApiKey` 字段或声明了 `authMethod: api_key`
+    /// 就算（容忍 `apikey` 别名），便于只填一个字段就能接入。
+    pub fn is_api_key_credential(&self) -> bool {
+        self.kiro_api_key.is_some()
+            || self
+                .auth_method
+                .as_deref()
+                .is_some_and(|m| canonicalize_auth_method_value(m).eq_ignore_ascii_case("api_key"))
+    }
+
+    /// 是否为企业 SSO（external_idp）凭据
+    ///
+    /// 容忍未规范化的别名（azuread / entraid），统一按规范值判断。
+    pub fn is_external_idp_credential(&self) -> bool {
+        self.auth_method
+            .as_deref()
+            .is_some_and(|m| canonicalize_auth_method_value(m).eq_ignore_ascii_case("external_idp"))
+    }
+
+    /// 返回调用上游时应携带的 `TokenType` 头值（无则 None）
+    ///
+    /// - API Key 凭据 → `API_KEY`
+    /// - 企业 SSO 凭据 → `EXTERNAL_IDP`
+    /// - social / idc → None
+    ///
+    /// API Key 判定优先于 external_idp：两者同时命中时按 API Key 处理，
+    /// 因为此时实际发出的 Bearer Token 来自 `kiroApiKey`。
+    pub fn token_type_header(&self) -> Option<&'static str> {
+        if self.is_api_key_credential() {
+            Some("API_KEY")
+        } else if self.is_external_idp_credential() {
+            Some("EXTERNAL_IDP")
+        } else {
+            None
+        }
+    }
+
     /// 检查账号是否支持 Opus 模型
     ///
     /// Free 账号不支持 Opus 模型，需要 PRO 或更高等级订阅
@@ -431,6 +482,7 @@ mod tests {
             auth_method: Some("social".to_string()),
             client_id: None,
             client_secret: None,
+            kiro_api_key: None,
             provider: None,
             token_endpoint: None,
             scopes: None,
@@ -554,6 +606,7 @@ mod tests {
             auth_method: None,
             client_id: None,
             client_secret: None,
+            kiro_api_key: None,
             provider: None,
             token_endpoint: None,
             scopes: None,
@@ -589,6 +642,7 @@ mod tests {
             auth_method: None,
             client_id: None,
             client_secret: None,
+            kiro_api_key: None,
             provider: None,
             token_endpoint: None,
             scopes: None,
@@ -706,6 +760,7 @@ mod tests {
             auth_method: Some("social".to_string()),
             client_id: None,
             client_secret: None,
+            kiro_api_key: None,
             provider: None,
             token_endpoint: None,
             scopes: None,
@@ -1118,6 +1173,103 @@ mod tests {
         assert!(serialized.contains("\"endpoint\""));
         assert!(serialized.contains("\"runtime\""));
         assert!(serialized.contains("\"codewhisperer\""));
+    }
+
+    #[test]
+    fn test_api_key_credential_detected_by_field_or_auth_method() {
+        // 只填 kiroApiKey（未声明 authMethod）也算 API Key 凭据
+        let mut only_field = KiroCredentials::default();
+        only_field.kiro_api_key = Some("ksk_abc".to_string());
+        assert!(only_field.is_api_key_credential());
+
+        // 只声明 authMethod（缺 key）同样命中，便于启动校验报错
+        let mut only_method = KiroCredentials::default();
+        only_method.auth_method = Some("api_key".to_string());
+        assert!(only_method.is_api_key_credential());
+
+        // apikey 别名
+        let mut alias = KiroCredentials::default();
+        alias.auth_method = Some("apikey".to_string());
+        assert!(alias.is_api_key_credential());
+
+        // social 凭据不应命中
+        let mut social = KiroCredentials::default();
+        social.auth_method = Some("social".to_string());
+        social.refresh_token = Some("rt".to_string());
+        assert!(!social.is_api_key_credential());
+    }
+
+    #[test]
+    fn test_canonicalize_api_key_aliases() {
+        assert_eq!(canonicalize_auth_method_value("apikey"), "api_key");
+        assert_eq!(canonicalize_auth_method_value("API_KEY"), "api_key");
+        assert_eq!(canonicalize_auth_method_value("api_key"), "api_key");
+
+        let mut cred = KiroCredentials::default();
+        cred.auth_method = Some("apikey".to_string());
+        cred.canonicalize_auth_method();
+        assert_eq!(cred.auth_method.as_deref(), Some("api_key"));
+    }
+
+    #[test]
+    fn test_token_type_header_api_key_takes_precedence() {
+        // API Key → API_KEY
+        let mut api = KiroCredentials::default();
+        api.kiro_api_key = Some("ksk_abc".to_string());
+        assert_eq!(api.token_type_header(), Some("API_KEY"));
+
+        // external_idp → EXTERNAL_IDP（含别名）
+        let mut idp = KiroCredentials::default();
+        idp.auth_method = Some("AzureAD".to_string());
+        assert_eq!(idp.token_type_header(), Some("EXTERNAL_IDP"));
+        assert!(idp.is_external_idp_credential());
+
+        // social / idc 不带该头
+        let mut social = KiroCredentials::default();
+        social.auth_method = Some("social".to_string());
+        assert_eq!(social.token_type_header(), None);
+        let mut idc = KiroCredentials::default();
+        idc.auth_method = Some("idc".to_string());
+        assert_eq!(idc.token_type_header(), None);
+
+        // 两者同时命中时按 API Key 处理：实际发出的 Bearer 来自 kiroApiKey
+        let mut both = KiroCredentials::default();
+        both.auth_method = Some("external_idp".to_string());
+        both.kiro_api_key = Some("ksk_abc".to_string());
+        assert_eq!(both.token_type_header(), Some("API_KEY"));
+    }
+
+    #[test]
+    fn test_kiro_api_key_serialization_roundtrip() {
+        let json = r#"{"kiroApiKey":"ksk_abc123","authMethod":"api_key"}"#;
+        let cred = KiroCredentials::from_json(json).unwrap();
+        assert_eq!(cred.kiro_api_key.as_deref(), Some("ksk_abc123"));
+        assert!(cred.is_api_key_credential());
+
+        // 往返一致
+        let out = cred.to_pretty_json().unwrap();
+        assert!(out.contains("kiroApiKey"));
+        let back = KiroCredentials::from_json(&out).unwrap();
+        assert_eq!(back.kiro_api_key.as_deref(), Some("ksk_abc123"));
+
+        // 未设置时不序列化该字段（旧配置文件不会凭空多出字段）
+        let plain = KiroCredentials {
+            refresh_token: Some("rt".to_string()),
+            ..Default::default()
+        };
+        assert!(!plain.to_pretty_json().unwrap().contains("kiroApiKey"));
+    }
+
+    #[test]
+    fn test_debug_redacts_kiro_api_key() {
+        let mut cred = KiroCredentials::default();
+        cred.kiro_api_key = Some("ksk_super_secret".to_string());
+        let dbg = format!("{:?}", cred);
+        assert!(
+            !dbg.contains("ksk_super_secret"),
+            "API Key 不得出现在日志里"
+        );
+        assert!(dbg.contains("kiro_api_key"));
     }
 
     #[test]

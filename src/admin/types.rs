@@ -81,8 +81,14 @@ pub struct SetPriorityRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddCredentialRequest {
-    /// 刷新令牌（必填）
-    pub refresh_token: String,
+    /// 刷新令牌（OAuth 凭据必填；`authMethod: api_key` 时改填 `kiroApiKey`）
+    pub refresh_token: Option<String>,
+
+    /// Kiro API Key（`authMethod: api_key` 时必填）
+    ///
+    /// 与 `refreshToken` 二者其一必填。填了它即视为 API Key 凭据，
+    /// 无需 `refreshToken`，也不参与 token 刷新。
+    pub kiro_api_key: Option<String>,
 
     /// 认证方式（可选，默认 social）
     #[serde(default = "default_auth_method")]
@@ -163,6 +169,9 @@ pub struct AddCredentialResponse {
 pub struct UpdateCredentialRequest {
     /// 刷新令牌（可选，更新后会重新验证）
     pub refresh_token: Option<String>,
+
+    /// Kiro API Key（可选，更新后重新校验非空）
+    pub kiro_api_key: Option<String>,
 
     /// 认证方式（可选）
     pub auth_method: Option<String>,

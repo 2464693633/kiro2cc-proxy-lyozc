@@ -302,13 +302,9 @@ impl KiroProvider {
             headers.insert("x-amz-target", HeaderValue::from_static(target));
         }
 
-        if ctx
-            .credentials
-            .auth_method
-            .as_deref()
-            .is_some_and(|m| m.eq_ignore_ascii_case("external_idp"))
-        {
-            headers.insert("TokenType", HeaderValue::from_static("EXTERNAL_IDP"));
+        // API Key → API_KEY；企业 SSO → EXTERNAL_IDP；social / idc 不带该头
+        if let Some(token_type) = ctx.credentials.token_type_header() {
+            headers.insert("TokenType", HeaderValue::from_static(token_type));
         }
 
         Ok(headers)
@@ -363,6 +359,11 @@ impl KiroProvider {
             "Authorization",
             HeaderValue::from_str(&format!("Bearer {}", ctx.token)).unwrap(),
         );
+        // 与 build_headers 对齐：API Key / 企业 SSO 凭据的 MCP 调用同样需要 TokenType，
+        // 否则上游按 social 凭据校验该 Bearer Token 会失败
+        if let Some(token_type) = ctx.credentials.token_type_header() {
+            headers.insert("TokenType", HeaderValue::from_static(token_type));
+        }
         Ok(headers)
     }
 
@@ -1419,5 +1420,76 @@ mod tests {
 
         assert!(headers.get("x-amz-target").is_none());
         assert_eq!(headers.get("host").unwrap(), "q.us-east-1.amazonaws.com");
+    }
+
+    // -------- API Key 凭据: TokenType 头 --------
+
+    #[test]
+    fn test_build_headers_injects_token_type_api_key() {
+        let mut config = Config::default();
+        config.region = "us-east-1".to_string();
+        let mut creds = KiroCredentials::default();
+        creds.id = Some(7);
+        creds.auth_method = Some("api_key".to_string());
+        creds.kiro_api_key = Some("ksk_abc".to_string());
+
+        let provider = create_test_provider(config, creds.clone());
+        let ctx = CallContext {
+            id: 7,
+            credentials: creds,
+            token: "ksk_abc".to_string(),
+        };
+        let endpoint = Endpoint::by_name(EndpointName::Ide, "us-east-1");
+        let headers = provider.build_headers(&ctx, "{}", 0, &endpoint).unwrap();
+
+        assert_eq!(headers.get("TokenType").unwrap(), "API_KEY");
+        // API Key 直接作为 Bearer Token 发出
+        assert_eq!(headers.get("authorization").unwrap(), "Bearer ksk_abc");
+    }
+
+    #[test]
+    fn test_build_headers_token_type_absent_for_social() {
+        let mut config = Config::default();
+        config.region = "us-east-1".to_string();
+        let mut creds = KiroCredentials::default();
+        creds.id = Some(8);
+        creds.auth_method = Some("social".to_string());
+        creds.refresh_token = Some("a".repeat(150));
+
+        let provider = create_test_provider(config, creds.clone());
+        let ctx = CallContext {
+            id: 8,
+            credentials: creds,
+            token: "tok".to_string(),
+        };
+        let endpoint = Endpoint::by_name(EndpointName::Ide, "us-east-1");
+        let headers = provider.build_headers(&ctx, "{}", 0, &endpoint).unwrap();
+
+        assert!(
+            headers.get("TokenType").is_none(),
+            "social 凭据不应带 TokenType 头"
+        );
+    }
+
+    #[test]
+    fn test_build_mcp_headers_injects_token_type() {
+        // 回归：build_mcp_headers 此前从未设置 TokenType，导致 API Key /
+        // 企业 SSO 凭据的 MCP（WebSearch）调用被上游按 social 凭据校验而失败
+        let mut config = Config::default();
+        config.region = "us-east-1".to_string();
+        let mut creds = KiroCredentials::default();
+        creds.id = Some(9);
+        creds.auth_method = Some("api_key".to_string());
+        creds.kiro_api_key = Some("ksk_mcp".to_string());
+
+        let provider = create_test_provider(config, creds.clone());
+        let ctx = CallContext {
+            id: 9,
+            credentials: creds,
+            token: "ksk_mcp".to_string(),
+        };
+        let headers = provider.build_mcp_headers(&ctx, 0).unwrap();
+
+        assert_eq!(headers.get("TokenType").unwrap(), "API_KEY");
     }
 }

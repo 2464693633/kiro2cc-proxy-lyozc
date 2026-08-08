@@ -276,7 +276,8 @@ impl AdminService {
         let new_cred = KiroCredentials {
             id: None,
             access_token: None,
-            refresh_token: Some(req.refresh_token),
+            refresh_token: req.refresh_token.filter(|s| !s.trim().is_empty()),
+            kiro_api_key: req.kiro_api_key.filter(|s| !s.trim().is_empty()),
             profile_arn: req.profile_arn.filter(|s| !s.is_empty()),
             expires_at: None,
             auth_method: Some(req.auth_method),
