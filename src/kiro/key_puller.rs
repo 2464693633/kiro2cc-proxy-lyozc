@@ -39,8 +39,19 @@ pub struct PulledKey {
 /// `token` 放最后：它可能指别的东西（分页 token 等），只在没有更明确字段时才用。
 const KEY_FIELDS: &[&str] = &["kiroApiKey", "apiKey", "api_key", "key", "token"];
 
-/// region 字段候选名
-const REGION_FIELDS: &[&str] = &["region", "apiRegion", "api_region"];
+/// region 字段候选名，按特异性从高到低
+///
+/// `awsRegion` / `aws_region` 必须排在 `zone` 之前：实际服务返回的是
+/// `{"zone":"eu","aws_region":"eu-central-1"}`，`zone` 只是粗粒度大区代号
+/// （`eu`），不是可用的 AWS region 名。若先命中 `zone`，会把 `"eu"` 当 region
+/// 拼出 `q.eu.amazonaws.com` 这种不存在的 host。
+const REGION_FIELDS: &[&str] = &[
+    "awsRegion",
+    "aws_region",
+    "apiRegion",
+    "api_region",
+    "region",
+];
 
 /// 在一个 JSON 对象里查找 key 样字段（返回首个命中的非空字符串值）
 fn find_key_in_object(obj: &serde_json::Map<String, Value>) -> Option<String> {
@@ -416,6 +427,48 @@ mod tests {
     fn accepts_token_field_when_no_better_candidate() {
         let keys = parse_pull_response(r#"{"token":"ksk_from_token"}"#).unwrap();
         assert_eq!(keys[0].api_key, "ksk_from_token");
+    }
+
+    #[test]
+    fn parses_real_claim_response_with_aws_region() {
+        // 实际服务返回的形状：key 嵌在 account 下，region 字段名叫 aws_region，
+        // 同层另有一个粗粒度的 zone="eu"。
+        let body = r#"{
+          "claimId": 158,
+          "channelId": 2,
+          "channelName": "sddy 8.7 下午",
+          "seatNo": 1,
+          "seatsTotal": 20,
+          "claimType": 3,
+          "claimTime": 1786259272893,
+          "warrantyUntil": 1786266472893,
+          "account": {
+            "key": "ksk_mXLVbMfOVmilynlFZLXzrrWg6ZnRwyg1",
+            "account": null,
+            "password": null,
+            "issuer_url": null,
+            "zone": "eu",
+            "aws_region": "eu-central-1",
+            "status": "active"
+          }
+        }"#;
+        let keys = parse_pull_response(body).unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].api_key, "ksk_mXLVbMfOVmilynlFZLXzrrWg6ZnRwyg1");
+        assert_eq!(
+            keys[0].region.as_deref(),
+            Some("eu-central-1"),
+            "必须取 aws_region 而非 zone —— zone 是大区代号，拼不出合法 host"
+        );
+    }
+
+    #[test]
+    fn aws_region_wins_over_coarse_zone() {
+        // 回归重点：zone 若排在 aws_region 之前会被误取，
+        // 拼出 q.eu.amazonaws.com 这种不存在的 host
+        let body = r#"{"key":"ksk_x","zone":"eu","aws_region":"eu-central-1"}"#;
+        let keys = parse_pull_response(body).unwrap();
+        assert_eq!(keys[0].region.as_deref(), Some("eu-central-1"));
     }
 
     #[test]
