@@ -141,7 +141,7 @@ async fn main() {
         api_url: config.count_tokens_api_url.clone(),
         api_key: config.count_tokens_api_key.clone(),
         auth_type: config.count_tokens_auth_type.clone(),
-        proxy: proxy_config,
+        proxy: proxy_config.clone(),
         tls_backend: config.tls_backend,
     });
 
@@ -185,6 +185,27 @@ async fn main() {
             .cache_simulation
             .fingerprint_max_breakpoints_per_account
     );
+
+    // 启动 API Key 自动拉取器
+    //
+    // 无条件构造并启动后台任务：配置可能在运行期经 Admin API 打开，
+    // 任务必须已在待命。未启用时每次 tick 直接跳过。
+    let key_puller = kiro::key_puller::KeyPuller::new(
+        config.key_pull.clone(),
+        token_manager.clone(),
+        proxy_config.clone(),
+        config.tls_backend,
+    );
+    key_puller.start_background_poll();
+    if config.key_pull.is_runnable() {
+        tracing::info!(
+            "API Key 自动拉取已启用: {} (每 {}s)",
+            kiro::key_puller::redact_url(config.key_pull.url.as_deref().unwrap_or("")),
+            config.key_pull.effective_interval_secs()
+        );
+    } else {
+        tracing::info!("API Key 自动拉取未启用（可在 Admin 面板配置）");
+    }
 
     let mut anthropic_app_state = anthropic::middleware::AppState::new()
         .with_rpm_tracker(rpm_tracker.clone())
