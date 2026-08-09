@@ -464,6 +464,25 @@ async fn refresh_external_idp_token(
 /// getUsageLimits API 所需的 x-amz-user-agent header 前缀
 const USAGE_LIMITS_AMZ_USER_AGENT_PREFIX: &str = "aws-sdk-js/1.0.0";
 
+/// `getUsageLimits` 这类用量 REST 接口只在 `us-east-1` 与 `eu-central-1` 提供服务。
+///
+/// 返回 `[主端点, 回退端点]`：按账号 region 选主端点，另一个作为 403 回退候选。
+/// - `eu-central-1` 或任意 `eu-*` → 主 `eu-central-1`
+/// - 其余 → 主 `us-east-1`
+///
+/// 为什么需要回退：API Key 的实际归属区域未必等于账号上标注的 region
+/// （自动拉取来的 key 尤其如此）。打错端点时上游返回
+/// `403 The bearer token included in the request is invalid.`，
+/// 单端点实现就此放弃，余额永远显示「未知」。
+fn rest_api_region_candidates(region: &str) -> [&'static str; 2] {
+    let lower = region.to_ascii_lowercase();
+    if lower == "eu-central-1" || lower.starts_with("eu-") {
+        ["eu-central-1", "us-east-1"]
+    } else {
+        ["us-east-1", "eu-central-1"]
+    }
+}
+
 /// 获取使用额度信息
 pub(crate) async fn get_usage_limits(
     credentials: &KiroCredentials,
@@ -475,7 +494,7 @@ pub(crate) async fn get_usage_limits(
 
     // 优先级：账号.api_region > config.api_region > config.region
     let region = credentials.effective_api_region(config);
-    let host = format!("q.{}.amazonaws.com", region);
+    let candidates = rest_api_region_candidates(region);
     let machine_id = machine_id::generate_from_credentials(credentials, config)
         .ok_or_else(|| anyhow::anyhow!("无法生成 machineId"))?;
     let kiro_version = &config.kiro_version;
@@ -487,11 +506,6 @@ pub(crate) async fn get_usage_limits(
     // `400 {"message":"Invalid profileArn."}`。profileArn 只属于流式聊天端点
     // （那里反而强制要求）。此前无条件拼接，导致任何带 profileArn 的账号
     // ——包括企业版 IdC——查余额必然 400。
-    let url = format!(
-        "https://{}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST",
-        host
-    );
-
     // 构建 User-Agent headers
     let user_agent = format!(
         "aws-sdk-js/1.0.0 ua/2.1 os/darwin#24.6.0 lang/js md/nodejs#22.21.1 \
@@ -505,27 +519,60 @@ pub(crate) async fn get_usage_limits(
 
     let client = build_client(proxy, 60, config.tls_backend)?;
 
-    let mut req = client
-        .get(&url)
-        .header("x-amz-user-agent", &amz_user_agent)
-        .header("User-Agent", &user_agent)
-        .header("host", &host)
-        .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
-        .header("amz-sdk-request", "attempt=1; max=1")
-        .header("Authorization", format!("Bearer {}", token))
-        .header("Connection", "close");
+    // 依次尝试主端点与回退端点：403 说明打错了区域，换另一个再试。
+    // 仅 403 回退 —— 401/429/5xx 换端点也不会好，立即返回避免多打一次上游。
+    let mut last_error: Option<String> = None;
+    for (idx, candidate_region) in candidates.iter().enumerate() {
+        let host = format!("q.{}.amazonaws.com", candidate_region);
+        let url = format!(
+            "https://{}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST",
+            host
+        );
 
-    // 与 provider::build_headers / build_mcp_headers 对齐：API Key → API_KEY、
-    // 企业 SSO → EXTERNAL_IDP。缺此头时上游会按 social 凭据校验该 Bearer Token。
-    if let Some(token_type) = credentials.token_type_header() {
-        req = req.header("TokenType", token_type);
-    }
+        let mut req = client
+            .get(&url)
+            .header("x-amz-user-agent", &amz_user_agent)
+            .header("User-Agent", &user_agent)
+            .header("host", &host)
+            .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
+            .header("amz-sdk-request", "attempt=1; max=1")
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Connection", "close");
 
-    let response = req.send().await?;
+        // 与 provider::build_headers / build_mcp_headers 对齐：API Key → API_KEY、
+        // 企业 SSO → EXTERNAL_IDP。缺此头时上游会按 social 凭据校验该 Bearer Token。
+        if let Some(token_type) = credentials.token_type_header() {
+            req = req.header("TokenType", token_type);
+        }
 
-    let status = response.status();
-    if !status.is_success() {
+        let response = req.send().await?;
+        let status = response.status();
+
+        if status.is_success() {
+            if idx > 0 {
+                tracing::info!(
+                    "getUsageLimits 在 {} 成功（账号标注 region={} 打错端点）",
+                    candidate_region,
+                    region
+                );
+            }
+            let data: UsageLimitsResponse = response.json().await?;
+            return Ok(data);
+        }
+
         let body_text = response.text().await.unwrap_or_default();
+
+        // 403 且还有候选端点：换区重试
+        if status.as_u16() == 403 && idx + 1 < candidates.len() {
+            tracing::debug!(
+                "getUsageLimits 在 {} 返回 403，尝试备用端点 {}",
+                candidate_region,
+                candidates[idx + 1]
+            );
+            last_error = Some(format!("{} {}", status, body_text));
+            continue;
+        }
+
         let error_msg = match status.as_u16() {
             401 => "认证失败，Token 无效或已过期",
             403 => "权限不足，无法获取使用额度",
@@ -536,8 +583,12 @@ pub(crate) async fn get_usage_limits(
         bail!("{}: {} {}", error_msg, status, body_text);
     }
 
-    let data: UsageLimitsResponse = response.json().await?;
-    Ok(data)
+    bail!(
+        "权限不足，无法获取使用额度（{} 与 {} 均返回 403）: {}",
+        candidates[0],
+        candidates[1],
+        last_error.unwrap_or_default()
+    );
 }
 
 /// 获取当前支持的模型列表（含官方费率倍率）
@@ -3932,6 +3983,72 @@ mod tests {
         let snapshot = manager.snapshot();
         let added = snapshot.entries.iter().find(|e| e.id == new_id).unwrap();
         assert!(!added.disabled);
+    }
+
+    #[test]
+    fn test_rest_api_region_candidates_picks_primary_by_region() {
+        // eu 区账号主端点走 eu-central-1
+        assert_eq!(
+            rest_api_region_candidates("eu-central-1"),
+            ["eu-central-1", "us-east-1"]
+        );
+        assert_eq!(
+            rest_api_region_candidates("eu-west-1"),
+            ["eu-central-1", "us-east-1"]
+        );
+        // 其余区域主端点走 us-east-1
+        assert_eq!(
+            rest_api_region_candidates("us-east-1"),
+            ["us-east-1", "eu-central-1"]
+        );
+        assert_eq!(
+            rest_api_region_candidates("ap-southeast-1"),
+            ["us-east-1", "eu-central-1"]
+        );
+    }
+
+    #[test]
+    fn test_rest_api_region_candidates_always_offers_a_fallback() {
+        // 两个候选必须互不相同，否则 403 回退等于原地重试
+        for r in [
+            "us-east-1",
+            "eu-central-1",
+            "eu-west-3",
+            "ap-northeast-1",
+            "",
+            "US-EAST-1",
+        ] {
+            let c = rest_api_region_candidates(r);
+            assert_ne!(c[0], c[1], "region={} 的两个候选端点不得相同", r);
+        }
+    }
+
+    #[test]
+    fn test_rest_api_region_candidates_case_insensitive() {
+        // 大写 region 不应被当成非 eu 区
+        assert_eq!(
+            rest_api_region_candidates("EU-CENTRAL-1"),
+            ["eu-central-1", "us-east-1"]
+        );
+    }
+
+    #[test]
+    fn test_usage_limits_falls_back_on_403() {
+        // 回归：单端点实现遇到 403 就放弃，导致 region 标注与实际归属
+        // 不一致的账号（自动拉取来的 key 尤其常见）余额永远显示"未知"
+        let src = include_str!("token_manager.rs").replace("\r\n", "\n");
+        let start = src
+            .find("pub(crate) async fn get_usage_limits(")
+            .expect("找不到 get_usage_limits");
+        let body = &src[start..];
+        let end = body.find("\n}\n").expect("找不到函数结尾");
+        let body = &body[..end];
+
+        assert!(
+            body.contains("rest_api_region_candidates"),
+            "必须按区域候选列表尝试，而非单端点"
+        );
+        assert!(body.contains("403"), "必须对 403 做回退判断");
     }
 
     #[test]
