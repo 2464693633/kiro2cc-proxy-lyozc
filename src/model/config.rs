@@ -14,6 +14,59 @@ pub enum TlsBackend {
     NativeTls,
 }
 
+/// 自动拉取 API Key 配置
+///
+/// 从 `url` 周期性拉取 API Key 并自动入库。默认关闭 —— 升级后不应凭空
+/// 开始向未知地址发请求。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyPullConfig {
+    /// 是否启用轮询
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// 拉取链接（含鉴权参数）
+    ///
+    /// 内含密钥，日志与面板回显一律经 `key_puller::redact_url` 隐去 query。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+
+    /// 轮询间隔（秒），默认 10
+    #[serde(default = "default_key_pull_interval_secs")]
+    pub interval_secs: u64,
+}
+
+/// 轮询间隔下限（秒）
+///
+/// 防止配置成 0 导致忙循环把对方接口打爆。
+pub const KEY_PULL_MIN_INTERVAL_SECS: u64 = 5;
+
+fn default_key_pull_interval_secs() -> u64 {
+    10
+}
+
+impl Default for KeyPullConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: None,
+            interval_secs: default_key_pull_interval_secs(),
+        }
+    }
+}
+
+impl KeyPullConfig {
+    /// 实际生效的轮询间隔，已夹取到下限
+    pub fn effective_interval_secs(&self) -> u64 {
+        self.interval_secs.max(KEY_PULL_MIN_INTERVAL_SECS)
+    }
+
+    /// 是否可以真正开始轮询（启用且有非空 URL）
+    pub fn is_runnable(&self) -> bool {
+        self.enabled && self.url.as_deref().is_some_and(|u| !u.trim().is_empty())
+    }
+}
+
 /// Prompt cache 模拟与指纹追踪配置
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -150,6 +203,10 @@ pub struct Config {
     #[serde(default)]
     pub cache_simulation: CacheSimulationConfig,
 
+    /// 自动拉取 API Key 配置
+    #[serde(default)]
+    pub key_pull: KeyPullConfig,
+
     /// 配置文件路径（运行时元数据，不写入 JSON）
     #[serde(skip)]
     config_path: Option<PathBuf>,
@@ -224,6 +281,7 @@ impl Default for Config {
             max_rpm_per_credential: default_max_rpm_per_credential(),
             model_cache_ttl_secs: default_model_cache_ttl_secs(),
             cache_simulation: CacheSimulationConfig::default(),
+            key_pull: KeyPullConfig::default(),
             config_path: None,
         }
     }
@@ -388,5 +446,58 @@ mod tests {
     fn test_model_cache_ttl_deserialize_explicit() {
         let config: Config = serde_json::from_str(r#"{"modelCacheTtlSecs": 60}"#).unwrap();
         assert_eq!(config.model_cache_ttl_secs, 60);
+    }
+
+    #[test]
+    fn test_key_pull_absent_in_old_config_stays_disabled() {
+        // 关键保证：升级后旧 config.json（无 keyPull 段）不得凭空开始
+        // 向未知地址发请求
+        let config: Config = serde_json::from_str(r#"{"port": 5678}"#).unwrap();
+        assert!(!config.key_pull.enabled);
+        assert!(config.key_pull.url.is_none());
+        assert!(!config.key_pull.is_runnable());
+        assert_eq!(config.key_pull.interval_secs, 10);
+    }
+
+    #[test]
+    fn test_key_pull_deserialize_explicit() {
+        let json = r#"{"keyPull":{"enabled":true,"url":"https://h/get?t=1","intervalSecs":30}}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.key_pull.enabled);
+        assert_eq!(config.key_pull.url.as_deref(), Some("https://h/get?t=1"));
+        assert_eq!(config.key_pull.effective_interval_secs(), 30);
+        assert!(config.key_pull.is_runnable());
+    }
+
+    #[test]
+    fn test_key_pull_interval_clamped_to_floor() {
+        // 0 会导致忙循环把对方接口打爆
+        let json = r#"{"keyPull":{"enabled":true,"url":"https://h/g","intervalSecs":0}}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.key_pull.effective_interval_secs(),
+            KEY_PULL_MIN_INTERVAL_SECS
+        );
+    }
+
+    #[test]
+    fn test_key_pull_not_runnable_without_url() {
+        // enabled 但 URL 缺失/空白：不可运行，避免每轮拿 None 去请求
+        let json = r#"{"keyPull":{"enabled":true}}"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert!(config.key_pull.enabled);
+        assert!(!config.key_pull.is_runnable());
+
+        let json2 = r#"{"keyPull":{"enabled":true,"url":"   "}}"#;
+        let config2: Config = serde_json::from_str(json2).unwrap();
+        assert!(!config2.key_pull.is_runnable());
+    }
+
+    #[test]
+    fn test_key_pull_url_omitted_from_json_when_none() {
+        // 未配置时不应在 config.json 里凭空出现 "url": null
+        let config = Config::default();
+        let json = serde_json::to_string(&config.key_pull).unwrap();
+        assert!(!json.contains("url"), "实际: {}", json);
     }
 }
