@@ -215,6 +215,184 @@ fn persist_auth_keys(
     Ok(())
 }
 
+/// 把自动拉取配置写回 config.json
+fn persist_key_pull(
+    config_path: &std::path::Path,
+    cfg: &crate::model::config::KeyPullConfig,
+) -> anyhow::Result<()> {
+    let content = std::fs::read_to_string(config_path)?;
+    let mut json: serde_json::Value = serde_json::from_str(&content)?;
+    json["keyPull"] = serde_json::to_value(cfg)?;
+    let output = serde_json::to_string_pretty(&json)?;
+    std::fs::write(config_path, output)?;
+    Ok(())
+}
+
+/// GET /api/admin/config/key-pull
+pub async fn get_key_pull_config(State(state): State<AdminState>) -> impl IntoResponse {
+    let cfg = match &state.key_puller {
+        Some(p) => p.config(),
+        None => crate::model::config::KeyPullConfig::default(),
+    };
+    let raw_url = cfg.url.as_deref().unwrap_or("");
+    Json(super::types::KeyPullConfigResponse {
+        enabled: cfg.enabled,
+        url: if raw_url.trim().is_empty() {
+            String::new()
+        } else {
+            crate::kiro::key_puller::redact_url(raw_url)
+        },
+        url_configured: !raw_url.trim().is_empty(),
+        interval_secs: cfg.effective_interval_secs(),
+        min_interval_secs: crate::model::config::KEY_PULL_MIN_INTERVAL_SECS,
+    })
+}
+
+/// PUT /api/admin/config/key-pull
+///
+/// 未传的字段保持原值；`url` 传空串表示清除。运行时立即生效并持久化。
+pub async fn set_key_pull_config(
+    State(state): State<AdminState>,
+    Json(payload): Json<super::types::SetKeyPullConfigRequest>,
+) -> impl IntoResponse {
+    let Some(puller) = state.key_puller.clone() else {
+        let error = super::types::AdminErrorResponse::internal_error("自动拉取器未初始化");
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!(error)),
+        )
+            .into_response();
+    };
+
+    let mut cfg = puller.config();
+
+    if let Some(url) = payload.url {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            cfg.url = None;
+        } else {
+            // 只允许 http/https —— 否则 file:// 之类可被用来读服务器本地文件
+            let scheme_ok = trimmed.starts_with("http://") || trimmed.starts_with("https://");
+            if !scheme_ok {
+                let error = super::types::AdminErrorResponse::invalid_request(
+                    "拉取链接必须以 http:// 或 https:// 开头",
+                );
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!(error)),
+                )
+                    .into_response();
+            }
+            cfg.url = Some(trimmed.to_string());
+        }
+    }
+
+    if let Some(secs) = payload.interval_secs {
+        if secs < crate::model::config::KEY_PULL_MIN_INTERVAL_SECS {
+            let error = super::types::AdminErrorResponse::invalid_request(format!(
+                "轮询间隔不得低于 {} 秒",
+                crate::model::config::KEY_PULL_MIN_INTERVAL_SECS
+            ));
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!(error)),
+            )
+                .into_response();
+        }
+        cfg.interval_secs = secs;
+    }
+
+    if let Some(enabled) = payload.enabled {
+        cfg.enabled = enabled;
+    }
+
+    // 启用但无 URL 是无意义状态：每轮都会拿 None 去请求
+    if cfg.enabled
+        && cfg
+            .url
+            .as_deref()
+            .map(|u| u.trim().is_empty())
+            .unwrap_or(true)
+    {
+        let error =
+            super::types::AdminErrorResponse::invalid_request("启用自动拉取前必须先填写拉取链接");
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!(error)),
+        )
+            .into_response();
+    }
+
+    // 运行时生效
+    puller.set_config(cfg.clone());
+
+    // 持久化；失败只告警，运行时已生效
+    if let Some(ref config_path) = state.config_path
+        && let Err(e) = persist_key_pull(config_path, &cfg)
+    {
+        tracing::error!("持久化自动拉取配置失败: {}", e);
+        let error = super::types::AdminErrorResponse::internal_error("持久化失败，但运行时已生效");
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!(error)),
+        )
+            .into_response();
+    }
+
+    tracing::info!(
+        "自动拉取配置已更新: enabled={}, interval={}s, url={}",
+        cfg.enabled,
+        cfg.effective_interval_secs(),
+        crate::kiro::key_puller::redact_url(cfg.url.as_deref().unwrap_or(""))
+    );
+
+    Json(super::types::SuccessResponse {
+        success: true,
+        message: "自动拉取配置已更新".to_string(),
+    })
+    .into_response()
+}
+
+/// POST /api/admin/config/key-pull/test
+///
+/// 试拉一次，只解析不入库 —— 让用户确认解析器能否识别那个接口的字段名。
+pub async fn test_key_pull(State(state): State<AdminState>) -> impl IntoResponse {
+    let Some(puller) = state.key_puller.clone() else {
+        let error = super::types::AdminErrorResponse::internal_error("自动拉取器未初始化");
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!(error)),
+        )
+            .into_response();
+    };
+
+    match puller.dry_run().await {
+        Ok(keys) => {
+            let items: Vec<super::types::TestKeyPullItem> = keys
+                .iter()
+                .map(|k| super::types::TestKeyPullItem {
+                    masked_key: crate::kiro::key_puller::mask_key_for_display(&k.api_key),
+                    region: k.region.clone(),
+                })
+                .collect();
+            Json(super::types::TestKeyPullResponse {
+                parsed: items.len(),
+                keys: items,
+            })
+            .into_response()
+        }
+        Err(e) => {
+            // e 内部已经是脱敏 URL（fetch_keys 保证），可直接回显
+            let error = super::types::AdminErrorResponse::invalid_request(e.to_string());
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!(error)),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// 单批次最多允许查询的 IP 数量
 const MAX_GEO_BATCH_IPS: usize = 200;
 

@@ -249,6 +249,7 @@ async fn main() {
             if let Some(ref tracker) = usage_tracker {
                 admin_state = admin_state.with_usage_tracker(tracker.clone());
             }
+            admin_state = admin_state.with_key_puller(key_puller.clone());
             admin_state = admin_state.with_throttle_log_store(throttle_log_store.clone());
             admin_state = admin_state.with_failure_log_store(failure_log_store.clone());
             admin_state = admin_state.with_log_capture(log_capture.clone());

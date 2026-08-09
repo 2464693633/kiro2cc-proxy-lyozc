@@ -47,6 +47,8 @@ pub struct AdminState {
     pub config_path: Option<PathBuf>,
     /// IP 归属地解析器（可选）
     pub geo_resolver: Option<Arc<GeoResolver>>,
+    /// API Key 自动拉取器（可选）
+    pub key_puller: Option<Arc<crate::kiro::key_puller::KeyPuller>>,
 }
 
 impl AdminState {
@@ -62,11 +64,17 @@ impl AdminState {
             log_capture: None,
             config_path: None,
             geo_resolver: None,
+            key_puller: None,
         }
     }
 
     pub fn with_api_key_manager(mut self, manager: Arc<ApiKeyManager>) -> Self {
         self.api_key_manager = Some(manager);
+        self
+    }
+
+    pub fn with_key_puller(mut self, puller: Arc<crate::kiro::key_puller::KeyPuller>) -> Self {
+        self.key_puller = Some(puller);
         self
     }
 

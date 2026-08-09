@@ -425,6 +425,64 @@ pub struct SetAuthKeysRequest {
     pub admin_psw: Option<String>,
 }
 
+// ============ API Key 自动拉取 ============
+
+/// 自动拉取配置查询响应
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+#[serde(rename_all = "camelCase")]
+pub struct KeyPullConfigResponse {
+    pub enabled: bool,
+    /// 脱敏后的 URL（query 串整体隐去）
+    ///
+    /// 未配置时为空串。脱敏后无法区分"未配置"与"已配置但被隐去"，
+    /// 故另给 `url_configured` 供前端判断。
+    pub url: String,
+    /// 是否已配置 URL
+    pub url_configured: bool,
+    /// 实际生效的轮询间隔（已夹取到下限）
+    pub interval_secs: u64,
+    /// 间隔下限，供前端做输入校验提示
+    pub min_interval_secs: u64,
+}
+
+/// 修改自动拉取配置请求
+///
+/// 字段全可选：未传的保持原值。`url` 传空串表示清除。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetKeyPullConfigRequest {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub interval_secs: Option<u64>,
+}
+
+/// 试拉一次的响应（只解析不入库）
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+#[serde(rename_all = "camelCase")]
+pub struct TestKeyPullResponse {
+    /// 解析出的 key 数量
+    pub parsed: usize,
+    /// 脱敏预览，让用户确认解析器认对了字段
+    pub keys: Vec<TestKeyPullItem>,
+}
+
+/// 试拉结果中的单项
+#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Deserialize))]
+#[serde(rename_all = "camelCase")]
+pub struct TestKeyPullItem {
+    /// 脱敏 key（前 4 + ... + 后 4）
+    pub masked_key: String,
+    /// 解析到的 region，缺失时为 None（入库将由全局配置兜底）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+}
+
 // ============ 支持模型 ============
 
 /// 支持模型条目（在 /v1/models 的 Model 基础上附加官方费率倍率）
