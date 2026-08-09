@@ -16,8 +16,15 @@
 //! 跨层取 region 会错配——外层的 region 可能属于另一个 key，或是无关字段。
 //! 宁可 region 缺失（回退全局配置）也不给错值。
 
+use parking_lot::RwLock;
 use serde_json::Value;
 use std::collections::HashSet;
+use std::sync::Arc;
+
+use crate::http_client::{ProxyConfig, build_client};
+use crate::kiro::model::credentials::KiroCredentials;
+use crate::kiro::token_manager::MultiTokenManager;
+use crate::model::config::{KeyPullConfig, TlsBackend};
 
 /// 从响应中解析出的单个 key
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,9 +133,240 @@ pub fn mask_key_for_display(key: &str) -> String {
     }
 }
 
+/// 单次拉取的结果统计
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PollOutcome {
+    /// 响应中解析出的 key 总数
+    pub parsed: usize,
+    /// 新入库数
+    pub added: usize,
+    /// 因已存在被去重拒绝数
+    pub duplicates: usize,
+    /// 其它原因失败数
+    pub failed: usize,
+}
+
+/// 判断 `add_credential` 的错误是否为"已存在"
+///
+/// 10 秒轮询下对方通常重复返回同一个 key，去重拒绝是**常态**而非异常。
+/// 必须与真失败区分：前者记 debug，后者记 warn，否则日志页会被刷满。
+fn is_duplicate_error(err: &anyhow::Error) -> bool {
+    err.to_string().contains("账号已存在")
+}
+
+/// 把解析出的 key 构造成 API Key 凭据
+///
+/// region 写入 `api_region` 而非 `region` —— 前者是 API 请求实际使用的字段，
+/// 与手动添加 API Key 账号的语义一致；缺失则留空由全局配置兜底。
+fn build_credential(pulled: &PulledKey) -> KiroCredentials {
+    KiroCredentials {
+        kiro_api_key: Some(pulled.api_key.clone()),
+        auth_method: Some("api_key".to_string()),
+        api_region: pulled.region.clone(),
+        ..Default::default()
+    }
+}
+
+/// API Key 自动拉取器
+pub struct KeyPuller {
+    config: Arc<RwLock<KeyPullConfig>>,
+    token_manager: Arc<MultiTokenManager>,
+    proxy: Option<ProxyConfig>,
+    tls_backend: TlsBackend,
+}
+
+impl KeyPuller {
+    pub fn new(
+        config: KeyPullConfig,
+        token_manager: Arc<MultiTokenManager>,
+        proxy: Option<ProxyConfig>,
+        tls_backend: TlsBackend,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            config: Arc::new(RwLock::new(config)),
+            token_manager,
+            proxy,
+            tls_backend,
+        })
+    }
+
+    /// 读取当前配置快照
+    pub fn config(&self) -> KeyPullConfig {
+        self.config.read().clone()
+    }
+
+    /// 运行时替换配置（Admin API 修改后立即生效）
+    pub fn set_config(&self, new_config: KeyPullConfig) {
+        *self.config.write() = new_config;
+    }
+
+    /// 启动后台轮询
+    ///
+    /// 无条件启动：配置可能在运行期经 Admin API 打开。未启用时每次 tick
+    /// 直接跳过，不发请求也不记日志。
+    pub fn start_background_poll(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut current_interval = {
+                let Some(this) = weak.upgrade() else { return };
+                this.config().effective_interval_secs()
+            };
+            let mut ticker =
+                tokio::time::interval(std::time::Duration::from_secs(current_interval));
+            ticker.tick().await; // 首次立即返回，跳过
+
+            loop {
+                ticker.tick().await;
+                let Some(this) = weak.upgrade() else { break };
+
+                let cfg = this.config();
+
+                // 间隔变更后重建 ticker，使面板改动立即生效而非等旧周期走完
+                let wanted = cfg.effective_interval_secs();
+                if wanted != current_interval {
+                    current_interval = wanted;
+                    ticker = tokio::time::interval(std::time::Duration::from_secs(wanted));
+                    ticker.tick().await;
+                    tracing::info!("自动拉取轮询间隔已更新为 {}s", wanted);
+                }
+
+                if !cfg.is_runnable() {
+                    continue;
+                }
+
+                match this.poll_once().await {
+                    Ok(outcome) => {
+                        if outcome.added > 0 || outcome.failed > 0 {
+                            tracing::info!(
+                                "自动拉取：解析 {} 个，新增 {}，重复 {}，失败 {}",
+                                outcome.parsed,
+                                outcome.added,
+                                outcome.duplicates,
+                                outcome.failed
+                            );
+                        } else {
+                            // 全部重复是常态，debug 级别避免刷满日志
+                            tracing::debug!("自动拉取：解析 {} 个，全部已存在", outcome.parsed);
+                        }
+                    }
+                    Err(e) => tracing::warn!("自动拉取失败: {}", e),
+                }
+            }
+        });
+    }
+
+    /// 请求并解析，不入库（供 test 端点与 poll_once 共用）
+    async fn fetch_keys(&self) -> anyhow::Result<Vec<PulledKey>> {
+        let cfg = self.config();
+        let url = cfg
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("未配置拉取链接"))?
+            .to_string();
+
+        let client = build_client(self.proxy.as_ref(), 15, self.tls_backend)?;
+        let response = client.get(&url).send().await.map_err(|e| {
+            // 错误信息里不能带完整 URL —— 它含密钥
+            anyhow::anyhow!("请求 {} 失败: {}", redact_url(&url), e)
+        })?;
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let preview: String = body.chars().take(200).collect();
+            anyhow::bail!("{} 返回 {}: {}", redact_url(&url), status, preview);
+        }
+
+        parse_pull_response(&body)
+    }
+
+    /// 拉取一次并入库
+    pub async fn poll_once(&self) -> anyhow::Result<PollOutcome> {
+        let keys = self.fetch_keys().await?;
+        let mut outcome = PollOutcome {
+            parsed: keys.len(),
+            ..Default::default()
+        };
+
+        for pulled in &keys {
+            match self
+                .token_manager
+                .add_credential(build_credential(pulled))
+                .await
+            {
+                Ok(id) => {
+                    outcome.added += 1;
+                    tracing::info!(
+                        "自动拉取新增账号 #{}（{}，region={}）",
+                        id,
+                        mask_key_for_display(&pulled.api_key),
+                        pulled.region.as_deref().unwrap_or("<全局默认>")
+                    );
+                }
+                Err(e) if is_duplicate_error(&e) => {
+                    outcome.duplicates += 1;
+                    tracing::debug!(
+                        "自动拉取跳过已存在的 {}",
+                        mask_key_for_display(&pulled.api_key)
+                    );
+                }
+                Err(e) => {
+                    outcome.failed += 1;
+                    tracing::warn!(
+                        "自动拉取入库失败 {}: {}",
+                        mask_key_for_display(&pulled.api_key),
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok(outcome)
+    }
+
+    /// 试拉一次，只解析不入库（供 Admin test 端点验证格式）
+    pub async fn dry_run(&self) -> anyhow::Result<Vec<PulledKey>> {
+        self.fetch_keys().await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_credential_maps_region_to_api_region() {
+        let c = build_credential(&PulledKey {
+            api_key: "ksk_abc".to_string(),
+            region: Some("eu-central-1".to_string()),
+        });
+        assert_eq!(c.kiro_api_key.as_deref(), Some("ksk_abc"));
+        assert_eq!(c.auth_method.as_deref(), Some("api_key"));
+        assert_eq!(c.api_region.as_deref(), Some("eu-central-1"));
+        assert!(c.is_api_key_credential());
+    }
+
+    #[test]
+    fn build_credential_leaves_region_empty_when_absent() {
+        // region 缺失应留空由全局配置兜底，而非填死某个值
+        let c = build_credential(&PulledKey {
+            api_key: "ksk_abc".to_string(),
+            region: None,
+        });
+        assert_eq!(c.api_region, None);
+    }
+
+    #[test]
+    fn distinguishes_duplicate_from_real_failure() {
+        // 去重是 10s 轮询下的常态，必须与真失败分流，否则日志被刷满
+        assert!(is_duplicate_error(&anyhow::anyhow!(
+            "账号已存在（kiroApiKey 重复）"
+        )));
+        assert!(!is_duplicate_error(&anyhow::anyhow!("kiroApiKey 为空")));
+        assert!(!is_duplicate_error(&anyhow::anyhow!("网络错误")));
+    }
 
     #[test]
     fn parses_flat_object() {
