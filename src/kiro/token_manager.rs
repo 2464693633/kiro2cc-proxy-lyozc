@@ -2293,67 +2293,11 @@ impl MultiTokenManager {
                 .ok_or_else(|| anyhow::anyhow!("账号不存在: {}", id))?
         };
 
-        // 检查是否需要刷新 token
-        let needs_refresh = is_token_expired(&credentials) || is_token_expiring_soon(&credentials);
-
-        let token = if needs_refresh {
-            let _guard = self.refresh_lock.lock().await;
-            let current_creds = {
-                let entries = self.entries.lock();
-                entries
-                    .iter()
-                    .find(|e| e.id == id)
-                    .map(|e| e.credentials.clone())
-                    .ok_or_else(|| anyhow::anyhow!("账号不存在: {}", id))?
-            };
-
-            if is_token_expired(&current_creds) || is_token_expiring_soon(&current_creds) {
-                // 冷却期检查：仅对"即将过期"生效，已过期必须立即刷新
-                let skip_for_cooldown = !is_token_expired(&current_creds) && {
-                    let entries = self.entries.lock();
-                    entries
-                        .iter()
-                        .find(|e| e.id == id)
-                        .and_then(|e| e.last_refreshed_at)
-                        .map(|t| t.elapsed() < TOKEN_REFRESH_COOLDOWN)
-                        .unwrap_or(false)
-                };
-                if skip_for_cooldown {
-                    tracing::debug!("Token 即将过期但在冷却期内（30s），跳过刷新");
-                    current_creds
-                        .access_token
-                        .clone()
-                        .ok_or_else(|| anyhow::anyhow!("冷却期内无 access_token"))?
-                } else {
-                    let effective_proxy = current_creds.effective_proxy(self.proxy.as_ref());
-                    let new_creds =
-                        refresh_token(&current_creds, &self.config, effective_proxy.as_ref())
-                            .await?;
-                    {
-                        let mut entries = self.entries.lock();
-                        if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
-                            entry.credentials = new_creds.clone();
-                            entry.last_refreshed_at = Some(Instant::now());
-                        }
-                    }
-                    // 持久化失败只记录警告，不影响本次请求
-                    if let Err(e) = self.persist_credentials() {
-                        tracing::warn!("Token 刷新后持久化失败（不影响本次请求）: {}", e);
-                    }
-                    new_creds
-                        .access_token
-                        .ok_or_else(|| anyhow::anyhow!("刷新后无 access_token"))?
-                }
-            } else {
-                current_creds
-                    .access_token
-                    .ok_or_else(|| anyhow::anyhow!("账号无 access_token"))?
-            }
-        } else {
-            credentials
-                .access_token
-                .ok_or_else(|| anyhow::anyhow!("账号无 access_token"))?
-        };
+        // 取 token 统一委托 try_ensure_token：它已处理 API Key 短路、双重检查锁、
+        // 刷新冷却与刷新后回写。此前这里复制了一份刷新逻辑，漏掉 API Key 短路分支——
+        // API Key 凭据没有 expires_at，is_token_expired 会 unwrap_or(true)，
+        // 于是每次余额查询都必然走刷新、撞上 refresh_token 的拒绝守卫而 100% 失败。
+        let token = self.try_ensure_token(id, &credentials).await?.token;
 
         let credentials = {
             let entries = self.entries.lock();
@@ -3961,6 +3905,43 @@ mod tests {
         let snapshot = manager.snapshot();
         let added = snapshot.entries.iter().find(|e| e.id == new_id).unwrap();
         assert!(!added.disabled);
+    }
+
+    #[tokio::test]
+    async fn test_get_usage_limits_api_key_does_not_hit_refresh_guard() {
+        // 回归：此前 get_usage_limits_for 复制了一份刷新逻辑但漏掉 API Key 短路。
+        // API Key 凭据无 expires_at → is_token_expired 走 unwrap_or(true) → 必然
+        // 进刷新分支 → 撞上 refresh_token 的拒绝守卫，余额查询 100% 失败于
+        // "API Key 凭据无需且不支持 token 刷新"。
+        //
+        // 现在取 token 委托 try_ensure_token（自带短路），因此不应再出现该错误。
+        // 本测试不联网断言成功——上游是否接受 API Key 查余额未知；只断言
+        // 失败原因不再是"取 token 阶段被守卫拦住"。
+        let mut cred = KiroCredentials::default();
+        cred.auth_method = Some("api_key".to_string());
+        cred.kiro_api_key = Some("ksk_usage_probe".to_string());
+        cred.id = Some(1);
+        // 强制直连，避免继承环境代理导致耗时过长
+        cred.proxy_url = Some("direct".to_string());
+
+        let manager =
+            MultiTokenManager::new(Config::default(), vec![cred], None, None, false).unwrap();
+
+        let err = match manager.get_usage_limits_for(1).await {
+            Ok(_) => return, // 真能查通更好，无需断言
+            Err(e) => e.to_string(),
+        };
+
+        assert!(
+            !err.contains("不支持 token 刷新"),
+            "取 token 阶段不应再被刷新守卫拦住，实际错误: {}",
+            err
+        );
+        assert!(
+            !err.contains("无 access_token"),
+            "API Key 凭据不该因缺 access_token 失败（token 来自 kiroApiKey），实际错误: {}",
+            err
+        );
     }
 
     #[test]
