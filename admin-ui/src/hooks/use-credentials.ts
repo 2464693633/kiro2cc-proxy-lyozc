@@ -21,6 +21,9 @@ import {
   getRpm,
   getAuthKeys,
   setAuthKeys,
+  getKeyPullConfig,
+  setKeyPullConfig,
+  testKeyPull,
   getKeyUsageRecords,
   getCredentialUsageRecords,
   getCredentialTodaySummary,
@@ -31,7 +34,7 @@ import {
   getModels,
   getChangelog,
 } from '@/api/credentials'
-import type { AddCredentialRequest, UpdateCredentialRequest, CreateApiKeyRequest, UpdateApiKeyRequest } from '@/types/api'
+import type { AddCredentialRequest, UpdateCredentialRequest, CreateApiKeyRequest, UpdateApiKeyRequest, SetKeyPullConfigRequest } from '@/types/api'
 
 // 查询凭据列表
 export function useCredentials() {
@@ -286,6 +289,33 @@ export function useSetAuthKeys() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['auth-keys'] })
     },
+  })
+}
+
+// ============ API Key 自动拉取 Hooks ============
+
+export function useKeyPullConfig() {
+  return useQuery({
+    queryKey: ['key-pull-config'],
+    queryFn: getKeyPullConfig,
+  })
+}
+
+export function useSetKeyPullConfig() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: SetKeyPullConfigRequest) => setKeyPullConfig(payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['key-pull-config'] })
+      // 拉取配置变更可能立刻带来新账号，顺带刷新账号列表
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    },
+  })
+}
+
+export function useTestKeyPull() {
+  return useMutation({
+    mutationFn: testKeyPull,
   })
 }
 

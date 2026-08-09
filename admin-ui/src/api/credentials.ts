@@ -22,6 +22,9 @@ import type {
   FailureLogsResponse,
   ModelsResponse,
   ReleaseNotesResponse,
+  KeyPullConfigResponse,
+  SetKeyPullConfigRequest,
+  TestKeyPullResponse,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -114,6 +117,28 @@ export async function getLoadBalancingMode(): Promise<{ mode: 'priority' | 'bala
 // 设置负载均衡模式
 export async function setLoadBalancingMode(mode: 'priority' | 'balanced'): Promise<{ mode: 'priority' | 'balanced' }> {
   const { data } = await api.put<{ mode: 'priority' | 'balanced' }>('/config/load-balancing', { mode })
+  return data
+}
+
+// ============ API Key 自动拉取 ============
+
+// 读取自动拉取配置（URL 已脱敏）
+export async function getKeyPullConfig(): Promise<KeyPullConfigResponse> {
+  const { data } = await api.get<KeyPullConfigResponse>('/config/key-pull')
+  return data
+}
+
+// 修改自动拉取配置（运行时立即生效并持久化）
+export async function setKeyPullConfig(
+  req: SetKeyPullConfigRequest
+): Promise<SuccessResponse> {
+  const { data } = await api.put<SuccessResponse>('/config/key-pull', req)
+  return data
+}
+
+// 试拉一次：只解析不入库，用于确认解析器能否识别该接口的字段名
+export async function testKeyPull(): Promise<TestKeyPullResponse> {
+  const { data } = await api.post<TestKeyPullResponse>('/config/key-pull/test')
   return data
 }
 

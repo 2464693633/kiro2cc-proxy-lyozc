@@ -12,6 +12,39 @@ export interface CredentialsStatusResponse {
 // api_key 凭据直接把 kiroApiKey 当 Bearer Token 用，不需要 refreshToken。
 export type AuthMethod = 'social' | 'idc' | 'external_idp' | 'api_key'
 
+// ============ API Key 自动拉取 ============
+
+export interface KeyPullConfigResponse {
+  enabled: boolean
+  /** 脱敏后的 URL（query 串整体隐去）；未配置时为空串 */
+  url: string
+  /** 是否已配置 URL —— 脱敏后无法从 url 本身区分"未配置"与"已隐去" */
+  urlConfigured: boolean
+  /** 实际生效的轮询间隔（已夹取到下限） */
+  intervalSecs: number
+  /** 间隔下限，用于前端输入校验 */
+  minIntervalSecs: number
+}
+
+export interface SetKeyPullConfigRequest {
+  enabled?: boolean
+  /** 传空串表示清除已配置的链接 */
+  url?: string
+  intervalSecs?: number
+}
+
+export interface TestKeyPullItem {
+  /** 脱敏 key（前 4 + ... + 后 4） */
+  maskedKey: string
+  /** 解析到的 region，缺失时入库由全局配置兜底 */
+  region?: string
+}
+
+export interface TestKeyPullResponse {
+  parsed: number
+  keys: TestKeyPullItem[]
+}
+
 // 禁用原因（后端 DisabledReason 的 snake_case 序列化值）
 //
 // 四者处置方式完全不同：manual 需人工重新启用；quota_exceeded 等下个计费周期；
