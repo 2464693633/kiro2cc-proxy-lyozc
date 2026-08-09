@@ -21,6 +21,12 @@
 /user-ui/pnpm-lock.yaml
 /user-ui/package-lock.json
 
+# Docker 部署的运行时配置目录
+# README 让 Docker 用户在仓库根目录创建 data/ 并放入 config.json 与
+# credentials.json。不忽略它，在该目录执行 git add . 会把账号 refreshToken、
+# kiroApiKey、子 API Key 一并提交，推到公开仓库即凭据泄露。
+/data/
+
 # Runtime files
 kiro-rs.pid
 logs/

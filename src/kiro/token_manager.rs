@@ -481,15 +481,16 @@ pub(crate) async fn get_usage_limits(
     let kiro_version = &config.kiro_version;
 
     // 构建 URL
-    let mut url = format!(
+    //
+    // 注意：**不能**拼 profileArn。该 REST 接口按 Bearer Token 自身身份返回额度，
+    // 附带 profileArn 会让请求变成畸形请求，上游直接回
+    // `400 {"message":"Invalid profileArn."}`。profileArn 只属于流式聊天端点
+    // （那里反而强制要求）。此前无条件拼接，导致任何带 profileArn 的账号
+    // ——包括企业版 IdC——查余额必然 400。
+    let url = format!(
         "https://{}/getUsageLimits?origin=AI_EDITOR&resourceType=AGENTIC_REQUEST",
         host
     );
-
-    // profileArn 是可选的
-    if let Some(profile_arn) = &credentials.profile_arn {
-        url.push_str(&format!("&profileArn={}", urlencoding::encode(profile_arn)));
-    }
 
     // 构建 User-Agent headers
     let user_agent = format!(
@@ -504,7 +505,7 @@ pub(crate) async fn get_usage_limits(
 
     let client = build_client(proxy, 60, config.tls_backend)?;
 
-    let response = client
+    let mut req = client
         .get(&url)
         .header("x-amz-user-agent", &amz_user_agent)
         .header("User-Agent", &user_agent)
@@ -512,9 +513,15 @@ pub(crate) async fn get_usage_limits(
         .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
         .header("amz-sdk-request", "attempt=1; max=1")
         .header("Authorization", format!("Bearer {}", token))
-        .header("Connection", "close")
-        .send()
-        .await?;
+        .header("Connection", "close");
+
+    // 与 provider::build_headers / build_mcp_headers 对齐：API Key → API_KEY、
+    // 企业 SSO → EXTERNAL_IDP。缺此头时上游会按 social 凭据校验该 Bearer Token。
+    if let Some(token_type) = credentials.token_type_header() {
+        req = req.header("TokenType", token_type);
+    }
+
+    let response = req.send().await?;
 
     let status = response.status();
     if !status.is_success() {
@@ -557,17 +564,22 @@ pub(crate) async fn list_available_models(
 
     let client = build_client(proxy, 15, config.tls_backend)?;
 
-    let response = client
+    let mut req = client
         .post(&url)
         .header("content-type", "application/x-amz-json-1.0")
         .header(
             "x-amz-target",
             "AmazonCodeWhispererService.ListAvailableModels",
         )
-        .header("Authorization", format!("Bearer {}", token))
-        .json(&body)
-        .send()
-        .await?;
+        .header("Authorization", format!("Bearer {}", token));
+
+    // 与其它上游调用点对齐：缺此头时上游按 social 凭据校验该 Bearer Token。
+    // API Key 凭据会经 MultiTokenManager 走到这里（/v1/models 的模型发现）。
+    if let Some(token_type) = credentials.token_type_header() {
+        req = req.header("TokenType", token_type);
+    }
+
+    let response = req.json(&body).send().await?;
 
     let status = response.status();
     if !status.is_success() {
@@ -3905,6 +3917,48 @@ mod tests {
         let snapshot = manager.snapshot();
         let added = snapshot.entries.iter().find(|e| e.id == new_id).unwrap();
         assert!(!added.disabled);
+    }
+
+    #[test]
+    fn test_usage_limits_url_never_carries_profile_arn() {
+        // 回归：该 REST 接口按 Bearer Token 自身身份返回额度，附带 profileArn
+        // 会让请求畸形，上游回 400 {"message":"Invalid profileArn."}。
+        // 此前无条件拼接，导致任何带 profileArn 的账号（含企业版 IdC）查余额必然 400。
+        // 归一化行尾：Windows 检出为 CRLF，直接找 "\n}\n" 会匹配不到
+        let src = include_str!("token_manager.rs").replace("\r\n", "\n");
+        let start = src
+            .find("pub(crate) async fn get_usage_limits(")
+            .expect("找不到 get_usage_limits");
+        let body = &src[start..];
+        let end = body.find("\n}\n").expect("找不到函数结尾");
+        let body = &body[..end];
+
+        assert!(
+            !body.contains("&profileArn="),
+            "getUsageLimits 的 URL 不得拼接 profileArn"
+        );
+        assert!(
+            body.contains("token_type_header"),
+            "getUsageLimits 必须携带 TokenType 头，否则上游按 social 凭据校验"
+        );
+    }
+
+    #[test]
+    fn test_list_available_models_sends_token_type() {
+        // 回归：API Key 凭据会经 MultiTokenManager 走到模型发现（/v1/models），
+        // 缺 TokenType 头时上游按 social 凭据校验该 Bearer Token。
+        let src = include_str!("token_manager.rs").replace("\r\n", "\n");
+        let start = src
+            .find("pub(crate) async fn list_available_models(")
+            .expect("找不到 list_available_models");
+        let body = &src[start..];
+        let end = body.find("\n}\n").expect("找不到函数结尾");
+        let body = &body[..end];
+
+        assert!(
+            body.contains("token_type_header"),
+            "list_available_models 必须携带 TokenType 头"
+        );
     }
 
     #[tokio::test]
