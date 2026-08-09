@@ -183,6 +183,7 @@
     "editHintOnlyChanged": "只填写需要修改的字段，留空的字段不会被更改。",
     "leaveBlankNoChange": "留空不修改",
     "updatingButton": "更新中...",
+    "authMethodApiKey": "Kiro API Key",
     "kiroApiKeyLabel": "Kiro API Key",
     "kiroApiKeyPlaceholder": "请输入 Kiro API Key（如 ksk_...）",
     "kiroApiKeyHint": "API Key 直接作为凭据使用，不需要 Refresh Token，也不会过期",

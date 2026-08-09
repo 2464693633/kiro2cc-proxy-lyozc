@@ -185,6 +185,7 @@
     "updatingButton": "Updating...",
     "toastRefreshTokenRequired": "Please enter a Refresh Token",
     "toastIdcFieldsRequired": "IdC/Builder-ID/IAM auth requires Client ID and Client Secret",
+    "authMethodApiKey": "Kiro API Key",
     "kiroApiKeyLabel": "Kiro API Key",
     "kiroApiKeyPlaceholder": "Enter the Kiro API Key (e.g. ksk_...)",
     "kiroApiKeyConfiguredPlaceholder": "Already set, leave blank to keep",
