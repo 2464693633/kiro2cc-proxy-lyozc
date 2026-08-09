@@ -403,6 +403,23 @@ impl KiroCredentials {
             .is_some_and(|m| canonicalize_auth_method_value(m).eq_ignore_ascii_case("external_idp"))
     }
 
+    /// 返回脱敏后的 API Key，供管理面板展示（无 key 则 None）
+    ///
+    /// 格式：前 4 + `...` + 后 4，例如 `ksk_...a1b2`。长度不足 16 或含非 ASCII
+    /// 字符时回退为 `***` —— 短 key 保留首尾会暴露过高比例，非 ASCII 按字节切片
+    /// 可能落在 UTF-8 边界内导致 panic。
+    ///
+    /// API Key 账号没有邮箱/昵称可标识，卡片上只能显示"账号 #N"，
+    /// 多个 API Key 账号无法区分，故需要这个展示值。
+    pub fn masked_api_key(&self) -> Option<String> {
+        let key = self.kiro_api_key.as_deref()?;
+        if key.is_ascii() && key.len() > 16 {
+            Some(format!("{}...{}", &key[..4], &key[key.len() - 4..]))
+        } else {
+            Some("***".to_string())
+        }
+    }
+
     /// 返回调用上游时应携带的 `TokenType` 头值（无则 None）
     ///
     /// - API Key 凭据 → `API_KEY`
@@ -1209,6 +1226,39 @@ mod tests {
         cred.auth_method = Some("apikey".to_string());
         cred.canonicalize_auth_method();
         assert_eq!(cred.auth_method.as_deref(), Some("api_key"));
+    }
+
+    #[test]
+    fn test_masked_api_key_shows_head_and_tail() {
+        let mut c = KiroCredentials::default();
+        c.kiro_api_key = Some("ksk_abcdefghijklmnop1234".to_string());
+        assert_eq!(c.masked_api_key().as_deref(), Some("ksk_...1234"));
+
+        // 非 API Key 凭据无值
+        let plain = KiroCredentials::default();
+        assert_eq!(plain.masked_api_key(), None);
+    }
+
+    #[test]
+    fn test_masked_api_key_falls_back_for_short_and_non_ascii() {
+        // 短 key 保留首尾会暴露过高比例，回退 ***
+        let mut short = KiroCredentials::default();
+        short.kiro_api_key = Some("ksk_short".to_string());
+        assert_eq!(short.masked_api_key().as_deref(), Some("***"));
+
+        // 恰好 16 字节（边界）仍回退
+        let mut boundary = KiroCredentials::default();
+        boundary.kiro_api_key = Some("0123456789abcdef".to_string());
+        assert_eq!(boundary.masked_api_key().as_deref(), Some("***"));
+
+        // 非 ASCII：按字节切片可能落在 UTF-8 边界内导致 panic，必须回退
+        let mut cjk = KiroCredentials::default();
+        cjk.kiro_api_key = Some("密钥密钥密钥密钥密钥".to_string());
+        assert_eq!(
+            cjk.masked_api_key().as_deref(),
+            Some("***"),
+            "非 ASCII key 必须回退，否则字节切片会 panic"
+        );
     }
 
     #[test]

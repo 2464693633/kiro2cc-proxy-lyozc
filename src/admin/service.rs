@@ -125,6 +125,8 @@ impl AdminService {
                 priority: entry.priority,
                 disabled: entry.disabled,
                 disabled_reason: entry.disabled_reason,
+                masked_api_key: entry.masked_api_key,
+                effective_api_region: entry.effective_api_region,
                 failure_count: entry.failure_count,
                 is_current: entry.id == snapshot.current_id,
                 expires_at: entry.expires_at,

@@ -186,6 +186,13 @@ export function CredentialCard({
                 {/* 行2：账号 + 最后调用 */}
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1 text-xs text-muted-foreground">
                   {credential.email && <span>{credential.email}</span>}
+                  {/* API Key 账号没有邮箱/昵称，靠脱敏 key 辨认是哪一个 */}
+                  {credential.maskedApiKey && (
+                    <span className="font-mono">{credential.maskedApiKey}</span>
+                  )}
+                  {credential.effectiveApiRegion && (
+                    <span>{credential.effectiveApiRegion}</span>
+                  )}
                   <span>{t('credentials.lastCallLabel', { time: formatLastUsed(credential.lastUsedAt, t) })}</span>
                   {credential.hasProxy && credential.proxyUrl && (
                     <span className="text-blue-500 truncate max-w-[200px]">{t('credentials.proxyLabel', { url: credential.proxyUrl })}</span>

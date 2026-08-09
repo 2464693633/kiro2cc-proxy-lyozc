@@ -43,6 +43,10 @@ export interface CredentialStatusItem {
   proxyUrl?: string
   healthStatus: 'healthy' | 'warning' | 'degraded' | 'unhealthy' | 'disabled'
   throttleCount: number
+  /** 脱敏后的 API Key（仅 api_key 凭据下发），如 ksk_...a1b2 */
+  maskedApiKey?: string
+  /** 实际生效的 API Region（账号 > config.apiRegion > config.region） */
+  effectiveApiRegion: string
 }
 
 // 余额响应

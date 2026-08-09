@@ -63,6 +63,11 @@ pub struct CredentialStatusItem {
     /// 连续失败可重置计数、配置错误必须改配置后重启。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<crate::kiro::token_manager::DisabledReason>,
+    /// 脱敏后的 API Key（仅 API Key 凭据有值），用于在卡片上辨认账号
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub masked_api_key: Option<String>,
+    /// 实际生效的 API Region（账号 > config.apiRegion > config.region）
+    pub effective_api_region: String,
 }
 
 // ============ 操作请求 ============

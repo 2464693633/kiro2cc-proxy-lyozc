@@ -764,6 +764,16 @@ pub struct CredentialEntrySnapshot {
     /// 连续失败可重置计数重试，配置错误必须改配置后重启。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<DisabledReason>,
+    /// 脱敏后的 API Key（仅 API Key 凭据有值）
+    ///
+    /// API Key 账号没有邮箱/昵称，卡片上只显示"账号 #N"，多个此类账号无法辨认。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub masked_api_key: Option<String>,
+    /// 实际生效的 API Region
+    ///
+    /// 取 `effective_api_region`（账号 > config.apiRegion > config.region）而非
+    /// 账号字段本身——后者通常为空，展示生效值才能判断请求实际发往哪个区域。
+    pub effective_api_region: String,
 }
 
 /// 账号管理器状态快照
@@ -2222,6 +2232,11 @@ impl MultiTokenManager {
                     throttle_count: e.throttle_count,
                     // 仅在确实禁用时给出原因，避免前端把历史原因当成当前状态
                     disabled_reason: if e.disabled { e.disabled_reason } else { None },
+                    masked_api_key: e.credentials.masked_api_key(),
+                    effective_api_region: e
+                        .credentials
+                        .effective_api_region(&self.config)
+                        .to_string(),
                 })
                 .collect(),
             current_id,
